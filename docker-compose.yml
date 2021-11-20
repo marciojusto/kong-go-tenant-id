@@ -2,6 +2,7 @@ version: '3.7'
 
 volumes:
   kong_data: {}
+  esdata: {}
 
 networks:
   kong-net:
@@ -47,7 +48,8 @@ services:
   kong:
     image: "kong:alpine"
     volumes:
-      - ./go-tenant-id:/usr/local/kong/go-tenant-id
+      - ./tenant-id/go-tenant-id:/usr/local/kong/go-tenant-id
+      - ./tenant-count-requests/go-tenant-count-requests:/usr/local/kong/go-tenant-count-requests
     depends_on:
       - db
     environment:
@@ -57,11 +59,14 @@ services:
       - KONG_PG_USER= kong
       - KONG_PG_PASSWORD= kong
       - KONG_CASSANDRA_CONTACT_POINTS= db
-      - KONG_PLUGINS=bundled, go-tenant-id
-      - KONG_PLUGINSERVER_NAMES= go-tenant-id
+      - KONG_PLUGINS=bundled, go-tenant-id, go-tenant-count-requests
+      - KONG_PLUGINSERVER_NAMES= go-tenant-id, go-tenant-count-requests
       - KONG_PLUGINSERVER_GO_TENANT_ID_SOCKET= /usr/local/kong/go-tenant-id.socket
       - KONG_PLUGINSERVER_GO_TENANT_ID_START_CMD= /usr/local/kong/go-tenant-id
       - KONG_PLUGINSERVER_GO_TENANT_ID_QUERY_CMD= /usr/local/kong/go-tenant-id --dump
+      - KONG_PLUGINSERVER_GO_TENANT_COUNT_REQUESTS_SOCKET= /usr/local/kong/go-tenant-count-requests.socket
+      - KONG_PLUGINSERVER_GO_TENANT_COUNT_REQUESTS_START_CMD= /usr/local/kong/go-tenant-count-requests
+      - KONG_PLUGINSERVER_GO_TENANT_COUNT_REQUESTS_QUERY_CMD= /usr/local/kong/go-tenant-count-requests --dump
       - KONG_PROXY_ACCESS_LOG= /dev/stdout
       - KONG_PROXY_ERROR_LOG= /dev/stderr
       - KONG_ADMIN_ACCESS_LOG= /dev/stdout
@@ -136,3 +141,52 @@ services:
       - db
     ports:
       - "1337:1337"
+
+  elasticsearch:
+    container_name: elasticsearch
+    image: docker.elastic.co/elasticsearch/elasticsearch:7.15.2
+    restart: always
+    environment:
+      - "discovery.type=single-node"
+      - "ES_JAVA_OPTS=-Xms1024m -Xmx1024m"
+    ports:
+      - "9200:9200"
+    networks:
+      - kong-net
+    volumes:
+      - esdata:/usr/share/elasticsearch/data:rw
+
+  kibana:
+    container_name: kibana
+    image: docker.elastic.co/kibana/kibana:7.15.2
+    restart: on-failure
+    environment:
+      elasticsearch.hosts: '["http://elasticsearch:9200"]'
+    ports:
+      - "5601:5601"
+    networks:
+      - kong-net
+
+  fluentbit:
+    build: ./fluentbit
+    container_name: fluentbit
+    ports:
+      - "24224:24224"
+      - "24224:24224/udp"
+    depends_on:
+      - elasticsearch
+    networks:
+      - kong-net
+
+  apm-server:
+    image: docker.elastic.co/apm/apm-server:7.15.2
+    container_name: apm-server
+    environment:
+      strict.perms: false
+      output.elastic.hosts: '[elasticsearch:9200]'
+    ports:
+      - "8200:8200"
+    depends_on:
+      - elasticsearch
+    networks:
+      - kong-net
